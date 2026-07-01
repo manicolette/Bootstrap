@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { BootstrapData, Phase, Track, CompletionType, Subtask } from "@/lib/bootstrap/types";
 import {
@@ -296,15 +296,14 @@ export function LogSessionModal({
   const [hours, setHours] = useState(1);
   const [note, setNote] = useState("");
 
-  // Reset on open
-  useState(() => {
+  useEffect(() => {
     if (open) {
       setTrackId(defaultTrackId ?? phase?.tracks[0]?.id ?? "");
       setDate(todayISO());
       setHours(1);
       setNote("");
     }
-  });
+  }, [open, defaultTrackId, phase]);
 
   if (!phase) return null;
 
