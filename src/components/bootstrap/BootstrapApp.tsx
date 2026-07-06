@@ -3,21 +3,29 @@ import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { useBootstrapData } from "@/lib/bootstrap/useBootstrapData";
 import {
+  activeGroup,
   activePhase,
   daysBetween,
   formatDate,
   formatDateShort,
+  formatRangeShort,
   hoursForTrack,
+  isGroupOverdue,
   newPhase,
   newTrack,
   phaseProgress,
+  quoteForToday,
+  sortedGroups,
   startOfMonthISO,
   startOfWeekISO,
+  tasksDoneInRange,
   todayISO,
   trackProgress,
+  trackSubtaskCounts,
   uid,
+  weeklyStreak,
 } from "@/lib/bootstrap/utils";
-import type { BootstrapData, Track } from "@/lib/bootstrap/types";
+import type { BootstrapData, Session, Track } from "@/lib/bootstrap/types";
 import { Badge, ProgressBar } from "@/components/bootstrap/ui";
 import { LogSessionModal, PhaseManagerModal, TrackDetailModal } from "@/components/bootstrap/modals";
 import { testConnection, type SupabaseSettings } from "@/lib/bootstrap/storage";
@@ -31,12 +39,20 @@ export function BootstrapApp() {
   const [detailTrackId, setDetailTrackId] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [logDefaultTrack, setLogDefaultTrack] = useState<string | null>(null);
+  const [editSession, setEditSession] = useState<Session | null>(null);
 
   const phase = activePhase(data);
   const detailTrack = phase?.tracks.find((t) => t.id === detailTrackId) ?? null;
 
   const openLogSession = (trackId?: string) => {
+    setEditSession(null);
     setLogDefaultTrack(trackId ?? null);
+    setLogOpen(true);
+  };
+
+  const openEditSession = (s: Session) => {
+    setEditSession(s);
+    setLogDefaultTrack(s.trackId);
     setLogOpen(true);
   };
 
@@ -54,9 +70,16 @@ export function BootstrapApp() {
             onLog={openLogSession}
           />
         )}
-        {tab === "sessions" && <SessionsView data={data} update={update} />}
+        {tab === "sessions" && <SessionsView data={data} update={update} onEdit={openEditSession} />}
         {tab === "completed" && <CompletedView data={data} update={update} />}
-        {tab === "settings" && <SettingsView settings={settings} setSettings={setSettings} />}
+        {tab === "settings" && (
+          <SettingsView
+            settings={settings}
+            setSettings={setSettings}
+            data={data}
+            update={update}
+          />
+        )}
       </div>
 
       <BottomTabs tab={tab} setTab={setTab} />
@@ -75,17 +98,22 @@ export function BootstrapApp() {
       />
       <LogSessionModal
         open={logOpen}
-        onClose={() => setLogOpen(false)}
+        onClose={() => {
+          setLogOpen(false);
+          setEditSession(null);
+        }}
         data={data}
         update={update}
         phase={phase}
         defaultTrackId={logDefaultTrack}
+        editSession={editSession}
       />
       <PhaseManagerModal
         open={phaseManagerOpen}
         onClose={() => setPhaseManagerOpen(false)}
         data={data}
         update={update}
+        onReturnToDashboard={() => setTab("dashboard")}
       />
 
       <Toaster />
@@ -129,32 +157,40 @@ function DashboardView({
   onLog: (trackId?: string) => void;
 }) {
   const phase = activePhase(data);
+  const streak = useMemo(() => weeklyStreak(data.sessions), [data.sessions]);
+  const quote = useMemo(() => quoteForToday(), []);
+  const greeting = data.displayName?.trim()
+    ? `Welcome back, ${data.displayName.trim()} ⚡`
+    : "Welcome back ⚡";
 
   if (!phase) {
     return (
-      <div className="card mt-8 p-6 text-center">
-        <div className="mb-2 text-4xl">🚀</div>
-        <h2 className="text-lg font-semibold">Create your first phase</h2>
-        <p className="mt-1 text-sm text-[var(--color-muted-foreground)]">
-          Phases group your tracks into focused time-boxed cycles.
-        </p>
-        <button
-          className="btn-primary mt-4"
-          onClick={() => {
-            const start = todayISO();
-            const endD = new Date();
-            endD.setDate(endD.getDate() + 60);
-            const end = endD.toISOString().slice(0, 10);
-            update((d) => ({ ...d, phases: [newPhase("Phase 1", start, end)] }));
-            toast.success("Phase 1 created");
-          }}
-        >
-          Create Phase 1
-        </button>
-        <div className="mt-2">
-          <button className="text-xs text-[var(--color-muted-foreground)] hover:underline" onClick={onOpenPhaseManager}>
-            Advanced…
+      <div className="space-y-4">
+        <GreetingHeader greeting={greeting} streak={streak} quote={quote} onQuickLog={() => onLog()} disabled />
+        <div className="card mt-4 p-6 text-center">
+          <div className="mb-2 text-4xl">🚀</div>
+          <h2 className="text-lg font-semibold">Create your first phase</h2>
+          <p className="mt-1 text-sm text-[var(--color-muted-foreground)]">
+            Phases group your tracks into focused time-boxed cycles.
+          </p>
+          <button
+            className="btn-primary mt-4"
+            onClick={() => {
+              const start = todayISO();
+              const endD = new Date();
+              endD.setDate(endD.getDate() + 60);
+              const end = endD.toISOString().slice(0, 10);
+              update((d) => ({ ...d, phases: [newPhase("Phase 1", start, end)] }));
+              toast.success("Phase 1 created");
+            }}
+          >
+            Create Phase 1
           </button>
+          <div className="mt-2">
+            <button className="text-xs text-[var(--color-muted-foreground)] hover:underline" onClick={onOpenPhaseManager}>
+              Advanced…
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -166,7 +202,7 @@ function DashboardView({
   const daysLeftLabel = daysLeft < 0 ? `Ended ${Math.abs(daysLeft)}d ago` : `${daysLeft} days left`;
 
   const addTrack = () => {
-    const t = newTrack();
+    const t = newTrack({ startDate: phase.startDate, endDate: phase.endDate });
     update((d) => ({
       ...d,
       phases: d.phases.map((p) => (p.id === phase.id ? { ...p, tracks: [...p.tracks, t] } : p)),
@@ -178,9 +214,11 @@ function DashboardView({
 
   return (
     <div className="space-y-4">
+      <GreetingHeader greeting={greeting} streak={streak} quote={quote} onQuickLog={() => onLog()} />
+
       <div className="card p-4">
         <div className="flex items-start justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <button
               className="text-left text-lg font-semibold hover:text-[var(--color-accent-2)]"
               onClick={onOpenPhaseManager}
@@ -217,6 +255,42 @@ function DashboardView({
   );
 }
 
+function GreetingHeader({
+  greeting,
+  streak,
+  quote,
+  onQuickLog,
+  disabled,
+}: {
+  greeting: string;
+  streak: number;
+  quote: string;
+  onQuickLog: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-semibold">{greeting}</h1>
+          <p className="mt-1 text-xs italic text-[var(--color-muted-foreground)]">"{quote}"</p>
+        </div>
+        {streak > 0 && (
+          <Badge tone="warning">🔥 {streak} week{streak === 1 ? "" : "s"}</Badge>
+        )}
+      </div>
+      <button
+        className="btn-primary mt-3 w-full"
+        onClick={onQuickLog}
+        disabled={disabled}
+        title={disabled ? "Create a phase first" : "Log a study session"}
+      >
+        + Quick Log Session
+      </button>
+    </div>
+  );
+}
+
 function TrackCard({
   track,
   data,
@@ -229,8 +303,15 @@ function TrackCard({
   onLog: () => void;
 }) {
   const prog = trackProgress(track);
-  const weekHours = hoursForTrack(data, track.id, startOfWeekISO());
-  const done = track.subtasks.filter((s) => s.done).length;
+  const counts = trackSubtaskCounts(track);
+  const weekStart = startOfWeekISO();
+  const weekHours = hoursForTrack(data, track.id, weekStart);
+  const weekTasks = tasksDoneInRange(track, weekStart);
+  const daysLeft = track.endDate ? daysBetween(todayISO(), track.endDate) : null;
+  const current = activeGroup(track);
+  const overdueGroup = sortedGroups(track).find((g) => isGroupOverdue(g));
+  const dateRange = formatRangeShort(track.startDate, track.endDate);
+
   return (
     <div className="card overflow-hidden">
       <button className="block w-full p-4 text-left" onClick={onClick}>
@@ -246,14 +327,33 @@ function TrackCard({
                   <p className="truncate text-xs text-[var(--color-muted-foreground)]">{track.description}</p>
                 )}
               </div>
-              {track.endDate && <span className="whitespace-nowrap text-xs text-[var(--color-muted-foreground)]">{formatDateShort(track.endDate)}</span>}
+              {dateRange && (
+                <span className="whitespace-nowrap text-xs text-[var(--color-muted-foreground)]">{dateRange}</span>
+              )}
             </div>
             <div className="mt-2">
-              <ProgressBar value={prog} complete={prog === 100} />
+              <ProgressBar value={prog} complete={prog === 100 && counts.total > 0} />
               <div className="mt-1 flex justify-between text-xs text-[var(--color-muted-foreground)]">
-                <span>{done}/{track.subtasks.length} subtasks</span>
+                <span>{counts.done}/{counts.total} tasks</span>
                 <span>{weekHours.toFixed(1)}h this week</span>
               </div>
+            </div>
+            {(current || overdueGroup) && (
+              <div className="mt-2 flex flex-wrap items-center gap-1 text-xs">
+                {current && (
+                  <Badge tone="accent">
+                    Now: {current.label}
+                    {current.startDate && current.endDate && ` · ${formatRangeShort(current.startDate, current.endDate)}`}
+                  </Badge>
+                )}
+                {overdueGroup && overdueGroup.id !== current?.id && (
+                  <Badge tone="danger">Overdue: {overdueGroup.label}</Badge>
+                )}
+              </div>
+            )}
+            <div className="mt-2 text-xs text-[var(--color-muted-foreground)]">
+              {weekTasks} task{weekTasks === 1 ? "" : "s"} this week · {weekHours.toFixed(1)}h logged
+              {daysLeft !== null && ` · ${daysLeft < 0 ? `${Math.abs(daysLeft)}d overdue` : `${daysLeft}d left`}`}
             </div>
           </div>
         </div>
@@ -276,11 +376,14 @@ function TrackCard({
 function SessionsView({
   data,
   update,
+  onEdit,
 }: {
   data: BootstrapData;
   update: (fn: (d: BootstrapData) => BootstrapData) => void;
+  onEdit: (s: Session) => void;
 }) {
   const [filterTrack, setFilterTrack] = useState<string>("");
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const trackMap = useMemo(() => {
     const m = new Map<string, Track>();
@@ -303,12 +406,34 @@ function SessionsView({
     return Array.from(g.entries());
   }, [filtered]);
 
+  const weekStart = startOfWeekISO();
+  const monthStart = startOfMonthISO();
   const weekTotal = data.sessions
-    .filter((s) => s.date >= startOfWeekISO())
+    .filter((s) => s.date >= weekStart)
     .reduce((sum, s) => sum + s.hours, 0);
   const monthTotal = data.sessions
-    .filter((s) => s.date >= startOfMonthISO())
+    .filter((s) => s.date >= monthStart)
     .reduce((sum, s) => sum + s.hours, 0);
+
+  const weekByGroup = useMemo(() => {
+    const m = new Map<string, number>();
+    data.sessions
+      .filter((s) => s.date >= weekStart && s.weekGroupId)
+      .forEach((s) => m.set(s.weekGroupId!, (m.get(s.weekGroupId!) ?? 0) + s.hours));
+    const rows: { label: string; hours: number }[] = [];
+    for (const [gid, hours] of m) {
+      let label = "Group";
+      for (const t of trackMap.values()) {
+        const g = t.groups?.find((x) => x.id === gid);
+        if (g) {
+          label = `${t.icon} ${g.label}`;
+          break;
+        }
+      }
+      rows.push({ label, hours });
+    }
+    return rows.sort((a, b) => b.hours - a.hours);
+  }, [data.sessions, trackMap, weekStart]);
 
   const del = (id: string) => {
     if (!confirm("Delete this session?")) return;
@@ -331,6 +456,19 @@ function SessionsView({
             <div className="text-2xl font-bold">{monthTotal.toFixed(1)}h</div>
           </div>
         </div>
+        {weekByGroup.length > 0 && (
+          <div className="mt-3 border-t border-[var(--color-border)] pt-3">
+            <div className="mb-1 text-xs text-[var(--color-muted-foreground)]">Hours by group this week</div>
+            <ul className="space-y-0.5 text-sm">
+              {weekByGroup.map((r) => (
+                <li key={r.label} className="flex justify-between">
+                  <span className="truncate">{r.label}</span>
+                  <span className="tabular-nums">{r.hours.toFixed(1)}h</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       <select className="input-base" value={filterTrack} onChange={(e) => setFilterTrack(e.target.value)}>
@@ -353,19 +491,55 @@ function SessionsView({
           <ul className="space-y-1">
             {entries.map((s) => {
               const t = trackMap.get(s.trackId);
+              const isOpen = expanded === s.id;
+              const groupLabel = t?.groups?.find((g) => g.id === s.weekGroupId)?.label;
               return (
-                <li key={s.id} className="flex items-start gap-2 rounded-lg bg-[var(--color-surface-2)] p-2 text-sm">
-                  <span className="text-lg">{t?.icon ?? "•"}</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium">{t?.name ?? "Unknown"}</div>
-                    {s.note && <div className="text-xs text-[var(--color-muted-foreground)]">{s.note}</div>}
-                  </div>
-                  <span className="whitespace-nowrap font-medium">{s.hours}h</span>
+                <li key={s.id} className="rounded-lg bg-[var(--color-surface-2)] text-sm">
                   <button
-                    className="text-[var(--color-muted-foreground)] hover:text-[var(--color-danger)]"
-                    onClick={() => del(s.id)}
-                    aria-label="Delete"
-                  >✕</button>
+                    className="flex w-full items-start gap-2 p-2 text-left"
+                    onClick={() => setExpanded(isOpen ? null : s.id)}
+                  >
+                    <span className="text-lg">{t?.icon ?? "•"}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium">{t?.name ?? "Unknown"}</div>
+                      {groupLabel && (
+                        <div className="text-[10px] uppercase tracking-wide text-[var(--color-muted-foreground)]">
+                          {groupLabel}
+                        </div>
+                      )}
+                      {s.note && !isOpen && (
+                        <div className="truncate text-xs text-[var(--color-muted-foreground)]">{s.note}</div>
+                      )}
+                    </div>
+                    <span className="whitespace-nowrap font-medium">{s.hours}h</span>
+                  </button>
+                  {isOpen && (
+                    <div className="border-t border-[var(--color-border)]/60 p-2">
+                      {s.note && (
+                        <p className="whitespace-pre-wrap text-xs text-[var(--color-muted-foreground)]">{s.note}</p>
+                      )}
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          className="rounded-md border border-[var(--color-border)] px-2 py-1 text-xs hover:border-[var(--color-accent)]"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEdit(s);
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="rounded-md border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-muted-foreground)] hover:border-[var(--color-danger)] hover:text-[var(--color-danger)]"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            del(s.id);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </li>
               );
             })}
@@ -427,7 +601,7 @@ function CompletedView({
           const t = a.originalTrackData;
           const b = badges[a.completionType];
           const expanded = expandedId === t.id;
-          const done = t.subtasks.filter((s) => s.done).length;
+          const counts = trackSubtaskCounts(t);
           return (
             <div key={t.id} className="card p-3">
               <button className="flex w-full items-start gap-3 text-left" onClick={() => setExpandedId(expanded ? null : t.id)}>
@@ -443,10 +617,27 @@ function CompletedView({
                 </div>
               </button>
               {expanded && (
-                <div className="mt-3 space-y-2 border-t border-[var(--color-border)] pt-3">
-                  {t.notes && <p className="whitespace-pre-wrap text-sm">{t.notes}</p>}
+                <div className="mt-3 space-y-2 border-t border-[var(--color-border)] pt-3 text-sm">
+                  <div className="grid grid-cols-2 gap-2">
+                    <MiniStat label="Total hours" value={`${(a.totalHours ?? 0).toFixed(1)}h`} />
+                    <MiniStat label="Sessions" value={String(a.totalSessions ?? 0)} />
+                    <MiniStat label="Started" value={t.startDate ? formatDateShort(t.startDate) : "—"} />
+                    <MiniStat label="Completed" value={formatDateShort(a.completedDate)} />
+                  </div>
+                  {a.finalNote && (
+                    <div>
+                      <div className="text-xs text-[var(--color-muted-foreground)]">Final note</div>
+                      <p className="whitespace-pre-wrap text-sm">{a.finalNote}</p>
+                    </div>
+                  )}
+                  {t.notes && (
+                    <div>
+                      <div className="text-xs text-[var(--color-muted-foreground)]">Notes</div>
+                      <p className="whitespace-pre-wrap text-sm">{t.notes}</p>
+                    </div>
+                  )}
                   <p className="text-xs text-[var(--color-muted-foreground)]">
-                    Subtasks: {done}/{t.subtasks.length} completed
+                    Tasks: {counts.done}/{counts.total} completed
                   </p>
                   <button
                     className="btn-ghost text-xs"
@@ -461,18 +652,35 @@ function CompletedView({
   );
 }
 
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-[var(--color-surface-2)] p-2">
+      <div className="text-xs text-[var(--color-muted-foreground)]">{label}</div>
+      <div className="text-base font-semibold">{value}</div>
+    </div>
+  );
+}
+
 function SettingsView({
   settings,
   setSettings,
+  data,
+  update,
 }: {
   settings: SupabaseSettings;
   setSettings: (s: SupabaseSettings) => void;
+  data: BootstrapData;
+  update: (fn: (d: BootstrapData) => BootstrapData) => void;
 }) {
   const [draft, setDraft] = useState(settings);
   const [testing, setTesting] = useState(false);
 
   const save = () => {
     setSettings(draft);
+    // Persist to localStorage via storage.saveSettings? setSettings state; save happens in hook indirectly.
+    try {
+      window.localStorage.setItem("bootstrap.settings", JSON.stringify(draft));
+    } catch {}
     toast.success("Settings saved");
   };
 
@@ -486,6 +694,20 @@ function SettingsView({
 
   return (
     <div className="space-y-4">
+      <div className="card p-4">
+        <h2 className="mb-1 text-lg font-semibold">Profile</h2>
+        <p className="mb-3 text-xs text-[var(--color-muted-foreground)]">
+          Used on the dashboard greeting.
+        </p>
+        <label className="text-xs text-[var(--color-muted-foreground)]">Display name</label>
+        <input
+          className="input-base mt-1"
+          placeholder="Your name"
+          value={data.displayName ?? ""}
+          onChange={(e) => update((d) => ({ ...d, displayName: e.target.value }))}
+        />
+      </div>
+
       <div className="card p-4">
         <h2 className="mb-1 text-lg font-semibold">Supabase</h2>
         <p className="mb-3 text-xs text-[var(--color-muted-foreground)]">
@@ -535,13 +757,14 @@ function SettingsView({
   id uuid primary key,
   bootstrap_data jsonb
 );
+-- Enable realtime on the table for cross-device sync.
 -- Add appropriate RLS or a permissive policy for anon.`}</code></pre>
       </div>
 
       <div className="card p-4">
         <h3 className="text-sm font-semibold">About Bootstrap</h3>
         <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
-          v1.0 — a command center for focused, multi-week learning phases.
+          v1.1 — a command center for focused, multi-week learning phases.
         </p>
       </div>
     </div>

@@ -88,3 +88,26 @@ export async function testConnection(s: SupabaseSettings): Promise<{ ok: boolean
     return { ok: false, message: (e as Error).message };
   }
 }
+
+export function subscribeRow(
+  s: SupabaseSettings,
+  onChange: (payload: unknown) => void,
+): (() => void) | null {
+  const c = getClient(s);
+  if (!c || !s.rowId) return null;
+  const channel = c
+    .channel(`user_data:${s.rowId}`)
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "user_data", filter: `id=eq.${s.rowId}` },
+      (payload: { new?: { bootstrap_data?: unknown } }) => {
+        if (payload?.new && "bootstrap_data" in payload.new) {
+          onChange(payload.new.bootstrap_data);
+        }
+      },
+    )
+    .subscribe();
+  return () => {
+    c.removeChannel(channel);
+  };
+}
