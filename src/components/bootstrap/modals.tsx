@@ -802,7 +802,7 @@ export function PhaseManagerModal({
                   />
                 </div>
                 <div className="mt-2 text-xs text-[var(--color-muted-foreground)]">
-                  {p.tracks.length} tracks · {allSubtasks({ groups: p.tracks.flatMap((t) => t.groups) } as Track).length} tasks
+                  {p.tracks.length} tracks · {allSubtasks({ groups: p.tracks.flatMap((t) => t.groups ?? []) } as Track).length} tasks
                 </div>
               </li>
             ))}
