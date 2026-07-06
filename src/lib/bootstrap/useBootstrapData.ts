@@ -5,6 +5,7 @@ import {
   loadCache,
   loadSettings,
   saveCache,
+  saveSettings,
   subscribeRow,
   upsertRow,
   type SupabaseSettings,
@@ -104,6 +105,7 @@ export function useBootstrapData() {
   }, []);
 
   const setSettings = useCallback((s: SupabaseSettings) => {
+    saveSettings(s);
     setSettingsState(s);
   }, []);
 
