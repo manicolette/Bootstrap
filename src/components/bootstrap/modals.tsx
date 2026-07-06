@@ -570,13 +570,13 @@ export function LogSessionModal({
     }
   }, [open, defaultTrackId, phase, editSession]);
 
-  if (!phase) return null;
-
   const allTracks = useMemo(() => {
     const map = new Map<string, Track>();
     data.phases.forEach((p) => p.tracks.forEach((t) => map.set(t.id, t)));
     return Array.from(map.values());
   }, [data]);
+
+  if (!phase) return null;
 
   const selectedTrack = allTracks.find((t) => t.id === trackId) ?? null;
 
